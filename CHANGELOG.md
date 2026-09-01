@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.11.0](https://github.com/magwoo/rospanel/compare/v2.10.1...v2.11.0) (2026-09-01)
+
+
+### Features
+
+* answer port 80 instead of leaving it closed ([6ce7dfd](https://github.com/magwoo/rospanel/commit/6ce7dfd2b9860d7c5789239297c9248112932400))
+* answer port 80 on nodes too ([ba0d549](https://github.com/magwoo/rospanel/commit/ba0d54969c35399111e2b36c8f7a902b380c40a8))
+* name the country and network operator behind each scanner ([b82f8f5](https://github.com/magwoo/rospanel/commit/b82f8f54599074c3dfadd3d77b62cd70aff88b5e))
+* say why a config was rolled back, and roll back to one that ran ([3087eab](https://github.com/magwoo/rospanel/commit/3087eab83048f61833c56a58114b717271d2fd14))
+
+
+### Bug Fixes
+
+* answer an unknown API path with JSON, not with the app shell ([88bc658](https://github.com/magwoo/rospanel/commit/88bc6587663891d635e5e030530873b699c7f939))
+* port 80 names this machine, and keeps naming the right one ([8dcfed3](https://github.com/magwoo/rospanel/commit/8dcfed33abea47095c70bf3a7576b3fcc4ff6bcd))
+* re-send the user set when Xray comes back from a crash ([62bbde0](https://github.com/magwoo/rospanel/commit/62bbde0b0a72b0aefc878fc78e50e684c5337363))
+* roll back an unloadable config even when no Apply preceded it ([707bfc9](https://github.com/magwoo/rospanel/commit/707bfc98dcd33bb4b527bc163469852064e0bf59))
+* snapshot the config before Xray reads it, and pin what was only assumed ([7860433](https://github.com/magwoo/rospanel/commit/786043313ac0917124c3fd3e3317587d46cf76e1))
+* spell the scanner's country the way the rest of the panel does ([3beaafd](https://github.com/magwoo/rospanel/commit/3beaafd915a880577d799eafad5548ac2d05f958))
+* take port 80 before issuing the certificate, not after ([fdc42ee](https://github.com/magwoo/rospanel/commit/fdc42ee13bea00795c99db17c98d6d3528294fd8))
+* the JSON fallback has to cover every method, not just GET ([ceaa62f](https://github.com/magwoo/rospanel/commit/ceaa62f3697e45d7e7e8d667059ad22c0dbeccd4))
+* use fork release channel ([034dfa9](https://github.com/magwoo/rospanel/commit/034dfa9c6c4c3e9e3db80952bbced3975ed0ca11))
+
 ## [2.10.1](https://github.com/AppsGanin/rospanel/compare/v2.10.0...v2.10.1) (2026-08-24)
 
 
