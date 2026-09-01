@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 #
-# RosPanel quick installer.
+# RosPanel quick installer for the magwoo/rospanel release channel.
 #
-#   curl -Ls https://raw.githubusercontent.com/AppsGanin/rospanel/main/install.sh | sudo bash
+#   curl -Ls https://raw.githubusercontent.com/magwoo/rospanel/main/install.sh | sudo bash
 #
-# Downloads the latest release binary, installs it as a systemd service via
-# `rospanel install`, and prints the one-time first-run credentials. Xray,
-# geo-bases and the TLS certificate are fetched by the panel itself on first run.
+# Downloads a published release binary, verifies it against SHA256SUMS, installs
+# it as a systemd service via `rospanel install`, and prints the one-time
+# first-run credentials. Xray, geo-bases and the TLS certificate are fetched by
+# the panel itself on first run.
 #
 # Node mode: pass --join '<url>' (from the panel's Add-node dialog) to install this
 # server as a panel-managed VPN node instead of a standalone panel:
@@ -16,12 +17,11 @@
 # Optional environment variables (all honoured by `rospanel install`):
 #   ROSPANEL_HOST=vpn.example.com     bind a domain (enables ACME TLS)
 #   ROSPANEL_ACME_EMAIL=you@mail.com  contact e-mail for Let's Encrypt
-#   ROSPANEL_VERSION=v1.2.3           install a specific release (default: latest)
+#   ROSPANEL_VERSION=v1.2.3           install a specific fork release (default: latest)
 #
 set -euo pipefail
 
-REPO="AppsGanin/rospanel"
-IMAGE="ghcr.io/appsganin/rospanel"   # GHCR image name is always lowercase
+REPO="magwoo/rospanel"
 VERSION="${ROSPANEL_VERSION:-latest}"
 ASSET=""   # resolved from the host architecture in the preflight checks below
 
@@ -53,6 +53,7 @@ die()  { printf '%serror:%s %s\n' "$RED" "$RST" "$*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "run as root (use: sudo bash <(curl -Ls ...))"
 [ "$(uname -s)" = "Linux" ] || die "RosPanel runs on Linux + systemd only"
 command -v systemctl >/dev/null 2>&1 || die "systemctl not found — systemd is required"
+command -v sha256sum >/dev/null 2>&1 || die "sha256sum not found — coreutils is required"
 
 # Map the host arch to the release asset (must match the GOARCH names the
 # release workflow builds: rospanel-linux-amd64 / rospanel-linux-arm64).
@@ -90,19 +91,27 @@ if [ -z "$JOIN_URL" ] && [ -z "${ROSPANEL_HOST:-}" ] && { exec 3</dev/tty; } 2>/
 fi
 export ROSPANEL_HOST ROSPANEL_ACME_EMAIL
 
-# --- resolve download URL ---------------------------------------------------
+# --- resolve download URLs --------------------------------------------------
 if [ "$VERSION" = "latest" ]; then
-	url="https://github.com/${REPO}/releases/latest/download/${ASSET}"
+	base_url="https://github.com/${REPO}/releases/latest/download"
 else
-	url="https://github.com/${REPO}/releases/download/${VERSION}/${ASSET}"
+	base_url="https://github.com/${REPO}/releases/download/${VERSION}"
 fi
+url="${base_url}/${ASSET}"
+checksum_url="${base_url}/SHA256SUMS"
 
-# --- download ---------------------------------------------------------------
+# --- download + verify ------------------------------------------------------
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 info "downloading ${BLD}${ASSET}${RST} (${VERSION})"
 fetch "$tmp/rospanel" "$url" || die "download failed: $url"
 [ -s "$tmp/rospanel" ] || die "downloaded file is empty — check the version tag"
+fetch "$tmp/SHA256SUMS" "$checksum_url" || die "checksum download failed: $checksum_url"
+expected="$(awk -v name="$ASSET" '$2 == name || $2 == ("*" name) { print $1; exit }' "$tmp/SHA256SUMS")"
+[ -n "$expected" ] || die "SHA256SUMS has no entry for ${ASSET}"
+actual="$(sha256sum "$tmp/rospanel" | awk '{print $1}')"
+[ "$actual" = "$expected" ] || die "checksum mismatch — installation cancelled"
+info "checksum verified"
 chmod +x "$tmp/rospanel"
 
 # --- node mode: join the panel and install the node service, then stop --------

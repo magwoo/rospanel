@@ -13,13 +13,16 @@ RUN npm run build
 #    cross-compile from the build platform to $TARGETARCH instead of emulating.
 FROM --platform=$BUILDPLATFORM golang:1.26.6 AS build
 ARG TARGETARCH
+ARG VERSION=2.10.1
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=web /web/dist ./web/dist
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags "-s -w" -o /out/rospanel ./cmd/rospanel
+    go build -trimpath \
+    -ldflags "-s -w -X github.com/AppsGanin/rospanel/internal/version.Version=${VERSION}" \
+    -o /out/rospanel ./cmd/rospanel
 
 # 3) Fetch the official Xray-core binary for the target architecture.
 FROM --platform=$BUILDPLATFORM debian:stable-slim AS xray
