@@ -2,22 +2,11 @@ name: ci
 
 # Quality gate for every push to main and every pull request: build the SPA,
 # vet + build + race-test the Go code, lint changed code, and scan for known
-# vulnerabilities. release-please.yml only runs on release; this is what stops a
-# broken change from ever reaching main.
+# vulnerabilities. The release workflow only publishes revisions explicitly tagged.
 on:
   push:
     branches: [main]
-  # release-please opens its PR as github-actions[bot], which GitHub treats as an
-  # outside contributor: the run lands in "action required" and waits for a manual
-  # click. Its PR only ever touches these three files, and that code already passed
-  # ci on the push to main, so skipping it here keeps releases hands-off without
-  # loosening the fork-PR approval policy that gates strangers. A PR touching any
-  # other file still runs the full gate.
   pull_request:
-    paths-ignore:
-      - .release-please-manifest.json
-      - CHANGELOG.md
-      - internal/version/version.go
 
 permissions:
   contents: read

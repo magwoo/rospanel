@@ -1,7 +1,6 @@
 // Package version exposes the panel's release version.
 package version
 
-// Version is the current release, kept in sync automatically by release-please
-// (via the extra-files entry in release-please-config.json). The trailing
-// annotation comment is the marker release-please rewrites on each release.
-const Version = "2.10.1" // x-release-please-version
+// Version is overridden by release builds via -ldflags. The fallback keeps
+// local/dev builds comparable to the upstream revision this fork started from.
+var Version = "2.10.1"
