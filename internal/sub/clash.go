@@ -9,20 +9,15 @@ import (
 	"github.com/AppsGanin/rospanel/internal/model"
 )
 
-// SubTitle is the per-user profile title: the configured subscription title (or
-// "RosPanel" by default), optionally suffixed with the user name when
-// SubNameInTitle is enabled.
-func SubTitle(u model.User, set *model.Settings) string {
+// SubTitle is the public client profile title: the configured subscription title
+// (or "RosPanel" by default). User.Name is operator-only and is deliberately never
+// included in subscription metadata.
+func SubTitle(_ model.User, set *model.Settings) string {
 	base := strings.TrimSpace(set.SubTitle)
 	if base == "" {
 		// One source of truth for the stock name — it used to be duplicated here as
 		// a literal, so rebranding the panel left the client profile title behind.
 		base = branding.DefaultName
-	}
-	if set.SubNameInTitle {
-		if name := strings.TrimSpace(u.Name); name != "" {
-			return base + " — " + name
-		}
 	}
 	return base
 }
@@ -250,9 +245,8 @@ func ClashYAMLMulti(u model.User, servers []Server) string {
 
 // clashGroupName is the select-group name for the generated profile. Mihomo parses a
 // rule line by splitting on commas, so a comma in the operator's subscription title
-// (or the user name appended to it) would be read as a rule separator and shift the
-// MATCH target — strip it here, where both the group definition and the rule read the
-// same name.
+// would be read as a rule separator and shift the MATCH target — strip it here, where
+// both the group definition and the rule read the same name.
 func clashGroupName(u model.User, set *model.Settings) string {
 	return strings.TrimSpace(strings.ReplaceAll(SubTitle(u, set), ",", " "))
 }

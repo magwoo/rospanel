@@ -598,14 +598,14 @@ func subWebAppURL(set *model.Settings, u model.User) string {
 	return url
 }
 
-// userSelfCard is the friendly subscription card the user sees in the bot (no
-// internal id, emoji labels, human-readable expiry / last-seen).
+// userSelfCard is the friendly subscription card the user sees in the bot. Its
+// heading is intentionally neutral: panel names and numeric ids are operator-only.
 func userSelfCard(u model.User, set *model.Settings, panel Panel, lang i18n.Lang) string {
 	loc := panel.Location()
 	now := time.Now().Unix()
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "👤 <b>%s</b> · <code>#%d</code>\n\n", esc(u.Name), u.ID)
+	fmt.Fprintf(&b, "👤 <b>%s</b>\n\n", i18n.T(lang, "user.cmdStart"))
 	fmt.Fprintf(&b, "%s\n", userStatusLine(u.Status, lang))
 
 	// Plan (only when billing is in play).
