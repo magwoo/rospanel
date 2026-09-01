@@ -3,9 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
-	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/AppsGanin/rospanel/internal/backup"
@@ -13,22 +11,13 @@ import (
 	"github.com/AppsGanin/rospanel/internal/version"
 )
 
-// updateRepo is the "owner/repo" the panel self-updates from: the baked-in
-// updater.Repo, optionally overridden by the ROSPANEL_REPO env (handy for testing).
-func updateRepo() string {
-	if r := strings.TrimSpace(os.Getenv("ROSPANEL_REPO")); r != "" {
-		return r
-	}
-	return updater.Repo
-}
-
-// checkUpdate reports the running version and, if the update repo is configured,
-// whether a newer GitHub release exists.
+// checkUpdate reports the running version and whether a newer release exists in
+// this build's fixed update channel.
 func (rt *Router) checkUpdate(w http.ResponseWriter, r *http.Request) {
 	resp := map[string]any{"current": version.Version, "available": false}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	rel, err := updater.Latest(ctx, updateRepo())
+	rel, err := updater.Latest(ctx, updater.Repo)
 	if err != nil {
 		resp["error"] = err.Error()
 		writeJSON(w, http.StatusOK, resp)
@@ -46,7 +35,7 @@ func (rt *Router) checkUpdate(w http.ResponseWriter, r *http.Request) {
 func (rt *Router) applyUpdate(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	rel, err := updater.Latest(ctx, updateRepo())
+	rel, err := updater.Latest(ctx, updater.Repo)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
@@ -56,10 +45,9 @@ func (rt *Router) applyUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	backupFn := func() error {
-		_ = rt.mgr.Store().Checkpoint() // flush WAL so the snapshot is current
+		_ = rt.mgr.Store().Checkpoint()
 		return backup.Create(rt.dataDir, filepath.Join(rt.dataDir, "pre-update-backup.tgz"))
 	}
-	// context.Background(): the download must outlive the HTTP request.
 	if err := updater.Apply(context.Background(), rel, backupFn); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
