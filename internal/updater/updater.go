@@ -25,8 +25,8 @@ import (
 )
 
 // Repo is the GitHub "owner/repo" this panel self-updates from, baked into the
-// build. Change it here if the project moves.
-const Repo = "AppsGanin/rospanel"
+// build. The fork pins this to its own release channel.
+const Repo = "magwoo/rospanel"
 
 // maxAssetBytes bounds a downloaded release binary. The real asset is ~25 MB, so this
 // leaves ample room while keeping a hostile or broken host from filling the disk before
