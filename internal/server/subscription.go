@@ -193,9 +193,6 @@ func handleSub(rt *Router, w http.ResponseWriter, r *http.Request, rest string) 
 	case "order":
 		rt.handleSubOrder(w, r, *u)
 
-	case "devices/unbind":
-		rt.handleSubDeviceUnbind(w, r, *u, set)
-
 	default:
 		// /app/<n> — deep-link hand-off page (opened in the external browser from the
 		// Telegram Mini App so the client scheme actually launches).
@@ -436,8 +433,10 @@ func (rt *Router) servePage(w http.ResponseWriter, u model.User, set *model.Sett
 	if err != nil {
 		return fmt.Errorf("%w: %w", errSubUnavailable, err)
 	}
+	// Device binding remains enforced on machine subscription fetches, but the
+	// human-facing page deliberately receives no roster, count or self-service path.
 	html, err := sub.Page(u, servers, rt.buildBilling(u, set, lang),
-		rt.buildDevices(u, set, lang), showDownload, lang)
+		sub.Devices{}, showDownload, lang)
 	if err != nil {
 		return err
 	}
