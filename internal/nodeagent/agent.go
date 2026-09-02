@@ -23,11 +23,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/AppsGanin/rospanel/internal/awg"
 	"github.com/AppsGanin/rospanel/internal/connguard"
 	"github.com/AppsGanin/rospanel/internal/decoy"
 	"github.com/AppsGanin/rospanel/internal/geo"
 	"github.com/AppsGanin/rospanel/internal/hop"
 	"github.com/AppsGanin/rospanel/internal/http80"
+	"github.com/AppsGanin/rospanel/internal/ipblock"
 	"github.com/AppsGanin/rospanel/internal/logbuf"
 	"github.com/AppsGanin/rospanel/internal/model"
 	"github.com/AppsGanin/rospanel/internal/nodeapi"
@@ -209,6 +211,17 @@ type Agent struct {
 	syncMu          sync.Mutex
 	syncCancel      context.CancelFunc
 	syncInterrupted atomic.Bool
+
+	// awg is this node's AmneziaWG tunnel (see awg.go); awgEmails maps a peer's
+	// public key to the user tag it reports under, awgLast the counters last read.
+	// policyBlock drops the addresses the panel's source policy refused, in this
+	// node's own firewall table.
+	policyBlock *ipblock.Blocker
+
+	awg       awg.Device
+	awgMu     sync.Mutex
+	awgEmails map[string]string
+	awgLast   map[string]awg.PeerStat
 }
 
 // Run loads the node identity and runs the agent until the context is cancelled
@@ -437,6 +450,8 @@ func newAgent(dataDir string, ident *Identity) (*Agent, error) {
 		sites:        map[siteKey]int64{},
 		seen:         newSeenAddrs(),
 		shaper:       shaper.New(),
+		awg:          awg.New(),
+		policyBlock:  ipblock.New(ipblock.TablePolicy),
 	}
 	// Resume report ids where the last run left off so the panel's forward-only
 	// watermark keeps accepting this node's traffic after a restart.
@@ -1030,6 +1045,15 @@ func (a *Agent) applyState(st *nodeapi.NodeState) error {
 	// Opera VPN egress helper: bring it up/down to match the desired state. The
 	// generated config's "opera" outbound already points at 127.0.0.1:OperaPort.
 	a.syncOpera(m.OperaEnabled, m.OperaCountry, m.OperaPort)
+	a.syncAWG(m.AWG)
+	// The addresses the panel's source policy refused. Sync, not add: a lifted block
+	// has to come out of the kernel here too.
+	if m.BlockTTLHours > 0 {
+		a.policyBlock.WithTTL(time.Duration(m.BlockTTLHours) * time.Hour)
+	}
+	if err := a.policyBlock.Sync(m.BlockedIPs); err != nil {
+		slog.Warn("node: could not apply the blocked addresses", "err", err)
+	}
 
 	// Substitute the cert-path sentinels with the node's absolute paths and apply.
 	//
@@ -1211,6 +1235,9 @@ func (a *Agent) ensureDecoy(dest, template string) error {
 
 func (a *Agent) shutdown() {
 	a.sup.Stop()
+	if a.awg != nil {
+		a.awg.Close()
+	}
 	a.operaSup.Stop()
 	if a.redirectSrv != nil {
 		_ = a.redirectSrv.Close()
@@ -1283,6 +1310,9 @@ func (a *Agent) selfUpdate(parent context.Context) bool {
 	}
 	slog.Info("node self-update: binary updated — restarting", "version", rel.Version)
 	a.sup.Stop()
+	if a.awg != nil {
+		a.awg.Close()
+	}
 	return true
 }
 
@@ -1293,7 +1323,8 @@ func resolveNodeXrayBin(downloadDir string) string {
 	if p, err := exec.LookPath(env("XRAY_BIN", "xray")); err == nil {
 		return p
 	}
-	slog.Info("node: downloading pinned Xray release", "version", xray.PinnedVersion)
+	slog.Info("node: no system Xray — using the node's own copy of the pinned release",
+		"version", xray.PinnedVersion)
 	p, err := xray.EnsureBinary(downloadDir)
 	if err != nil {
 		slog.Error("node: Xray binary unavailable — config will be written but not started", "err", err)

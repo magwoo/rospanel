@@ -187,8 +187,8 @@ func runServer(dataDir string) {
 	mgr := core.New(st, sup, xray.Options{PanelDest: panelDest(adminAddr)},
 		core.TLSPaths{CertPath: certPath, KeyPath: keyPath, ACMEDir: acmeDir},
 		filepath.Join(dataDir, "opera"))
-	sup.SetOnAccess(mgr.RecordAccess) // track online status + connection IPs
-	mgr.StartSysstat(dataDir)         // host metrics for the dashboard
+	sup.SetOnAccess(mgr.RecordLocalAccess) // track online status + connection IPs
+	mgr.StartSysstat(dataDir)              // host metrics for the dashboard
 	// Blocklists for abuse detection. Cached copies load synchronously (fast, local),
 	// so matching works from the first access-log line; downloads run in background
 	// and a failure leaves the matcher empty rather than holding up the boot.
@@ -202,6 +202,9 @@ func runServer(dataDir string) {
 	// once with the proxies already in place — instead of starting empty and being
 	// restarted moments later when the background fetch lands.
 	mgr.SeedProxies()
+	// Put back the addresses the source policy had refused: the kernel forgets its
+	// sets on restart, and the panel's own record is what says who should still be out.
+	mgr.ApplyPolicyBlocksAtBoot()
 
 	startupStage("generating Xray config and starting Xray")
 	if err := mgr.Reconcile(); err != nil {
@@ -329,6 +332,7 @@ func runServer(dataDir string) {
 	// own SIGTERM at the same moment we do. Marking the shutdown before we wait on
 	// anything is what keeps an ordinary restart from paging the operator.
 	sup.Stop()
+	mgr.StopAWG()
 
 	// Drop the per-user speed caps. They live in the kernel's qdisc tree, which
 	// outlives this process until reboot — a panel that was stopped must not keep
@@ -442,6 +446,11 @@ func statsPollLoop(mgr *core.Manager) {
 				log.Printf("stats poll: %v", err)
 			}
 		})
+		safeTick("awg poll", func() {
+			if err := mgr.PollAWG(); err != nil {
+				log.Printf("awg poll: %v", err)
+			}
+		})
 	}
 }
 
@@ -481,6 +490,7 @@ func retentionLoop(mgr *core.Manager) {
 		mgr.PurgeOldEvents()
 		mgr.PurgeOldAdminAudit()
 		mgr.PurgeOldConnections()
+		mgr.PurgePolicyBlocks()
 		mgr.PurgeOldProbes()       // scanning IPs past their retention window
 		mgr.PurgeOldOrders()       // cancelled (never-paid) orders past their retention window
 		mgr.PurgeOldNodeCommands() // node commands nobody came back for
@@ -640,8 +650,9 @@ func resolveXrayBin(bin, downloadDir string) string {
 	if fi, err := os.Stat(bin); err == nil && !fi.IsDir() {
 		return bin
 	}
-	log.Printf("xray: %q not found — downloading pinned release %s from GitHub "+
-		"(~40 MB; can take a minute on a slow link)", bin, xray.PinnedVersion)
+	log.Printf("xray: no system %q — using the panel's own copy of the pinned release %s "+
+		"(installing or upgrading it downloads ~40 MB and can take a minute on a slow link)",
+		bin, xray.PinnedVersion)
 	t0 := time.Now()
 	p, err := xray.EnsureBinary(downloadDir)
 	if err != nil {

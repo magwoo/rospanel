@@ -19,7 +19,6 @@ import (
 	"github.com/AppsGanin/rospanel/internal/logbuf"
 	"github.com/AppsGanin/rospanel/internal/model"
 	"github.com/AppsGanin/rospanel/internal/netguard"
-	"github.com/AppsGanin/rospanel/internal/probeblock"
 	"github.com/AppsGanin/rospanel/internal/warp"
 	"github.com/AppsGanin/rospanel/internal/xray"
 )
@@ -646,6 +645,9 @@ func (m *Manager) SaveSubSettings(st *model.Settings) error {
 		return invalidCode("err.subPathCharset", "путь подписки: латиница, цифры, «-» и «_», 1–32 символа")
 	}
 	st.SubAnnounce = strings.TrimSpace(st.SubAnnounce)
+	if st.SubOrderMode != "" && !model.ValidOrderMode(st.SubOrderMode) {
+		return invalidCode("err.subOrderMode", "неизвестный режим порядка серверов")
+	}
 	// Clients render at most 200 characters of the announcement and silently cut the
 	// rest, so a longer text is a message the operator thinks they sent and nobody
 	// ever read. Reject it here instead. Runes, not bytes: the text is Cyrillic.
@@ -763,13 +765,13 @@ func (m *Manager) SetProbeDetect(on bool) error {
 	// auto-block switch (the only thing that calls Clear) whenever detection is off. An
 	// operator who turns the feature off is entitled to assume it stopped acting.
 	if !on {
-		_ = probeblock.Clear()
+		_ = m.probeBlock.Clear()
 		return nil
 	}
 	// Back on: re-arm only if auto-blocking itself is still switched on, since Clear
 	// disarmed it above.
 	if set, err := m.store.GetSettings(); err == nil && set.ProbeBlock {
-		probeblock.Arm()
+		m.probeBlock.Arm()
 	}
 	return nil
 }
@@ -811,7 +813,7 @@ func (m *Manager) RecordProbe(ip string, paths int) {
 	// If auto-blocking is on, drop the scanner at the firewall too. Best-effort and
 	// gated so recording stays the default; a lost block must not affect the request.
 	if set, err := m.store.GetSettings(); err == nil && set.ProbeBlock {
-		if err := probeblock.BlockIP(ip); err != nil {
+		if err := m.probeBlock.BlockIP(ip); err != nil {
 			logErr("probe: firewall block failed", "ip", ip, "err", err)
 		}
 	}
@@ -825,9 +827,9 @@ func (m *Manager) SetProbeBlock(on bool) error {
 		return err
 	}
 	if on {
-		probeblock.Arm()
+		m.probeBlock.Arm()
 	} else {
-		_ = probeblock.Clear()
+		_ = m.probeBlock.Clear()
 	}
 	return nil
 }

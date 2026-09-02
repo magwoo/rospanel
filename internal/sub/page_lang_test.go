@@ -45,7 +45,8 @@ func TestPageEnglishHasNoRussian(t *testing.T) {
 }
 
 // TestPageRussianStillRussian is the other half: the English work must not have
-// quietly turned the Russian page English.
+// quietly turned the Russian page English. The personalized greeting is intentionally
+// absent in this fork because User.Name is operator-only.
 func TestPageRussianStillRussian(t *testing.T) {
 	u := model.User{Name: "Алиса", SubToken: "tok"}
 	html, err := Page(u, langTestServers(), Billing{}, Devices{}, true, i18n.RU)

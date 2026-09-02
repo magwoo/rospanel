@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/AppsGanin/rospanel/internal/actor"
 	"github.com/AppsGanin/rospanel/internal/i18n"
 	"github.com/AppsGanin/rospanel/internal/model"
 )
@@ -22,10 +23,6 @@ import (
 // write an audit row and ping the operator every few minutes, forever.
 const deviceRefusalQuiet = 6 * time.Hour
 
-// deviceNotice remembers which events have already been reported, so a condition that
-// repeats on a client's own retry timer is announced once per window rather than once
-// per attempt. Bounded by the number of distinct keys seen inside one window, and swept
-// on the same pass that expires them.
 type deviceNotice struct {
 	mu    sync.Mutex
 	quiet time.Duration
@@ -38,11 +35,7 @@ func newNotice(quiet time.Duration) *deviceNotice {
 	return &deviceNotice{quiet: quiet, seen: map[string]time.Time{}}
 }
 
-// should reports whether this refusal is worth reporting, and marks it reported.
 func (n *deviceNotice) should(key string, now time.Time) bool {
-	// Nil-safe: a Manager assembled field-by-field (tests, and any future path that
-	// skips New) has no notice, and "no throttle configured" must mean "report it",
-	// never a nil dereference on a payment or device path.
 	if n == nil {
 		return true
 	}
@@ -51,7 +44,7 @@ func (n *deviceNotice) should(key string, now time.Time) bool {
 	if last, ok := n.seen[key]; ok && now.Sub(last) < n.quiet {
 		return false
 	}
-	for k, t := range n.seen { // opportunistic sweep: the map is only ever walked here
+	for k, t := range n.seen {
 		if now.Sub(t) >= n.quiet {
 			delete(n.seen, k)
 		}
@@ -60,26 +53,12 @@ func (n *deviceNotice) should(key string, now time.Time) bool {
 	return true
 }
 
-// DeviceVerdict is the answer to "may this client have the subscription?".
 type DeviceVerdict struct {
 	Allow bool
-	// Cap and Count describe the roster at the moment of the decision, for the
-	// message the refused client is shown. Both 0 when the feature is off.
 	Cap   int
 	Count int
 }
 
-// AdmitDevice decides whether one subscription fetch is served, binding the client
-// to the user when it identifies itself and there is room.
-//
-// With the feature off, every fetch is served exactly as before. With it on, a
-// client that sends no id is refused unless the operator turned HWIDRequire off:
-// serving the silent ones leaves a cap that anyone can dodge by switching to a
-// client that says nothing, which is why requiring is the default — at the cost of
-// clients that send no id (v2rayN, Clash, curl) no longer working.
-//
-// The subscription PAGE is unaffected either way: a person opening their account in
-// a browser is not an install asking for credentials.
 func (m *Manager) AdmitDevice(ctx context.Context, u model.User, set *model.Settings, d model.Device) DeviceVerdict {
 	if !set.HWIDEnabled {
 		return DeviceVerdict{Allow: true}
@@ -90,9 +69,6 @@ func (m *Manager) AdmitDevice(ctx context.Context, u model.User, set *model.Sett
 	capacity := set.DeviceCap(u)
 	adm, err := m.store.RegisterDevice(u.ID, d, capacity)
 	if err != nil {
-		// A storage failure must not lock a paying user out of their subscription:
-		// the cap is a policy, and losing the ability to enforce it for one fetch is
-		// the lesser failure. Logged so it doesn't pass unnoticed.
 		logErr("devices: register failed", "user", u.ID, "err", err)
 		return DeviceVerdict{Allow: true}
 	}
@@ -108,8 +84,6 @@ func (m *Manager) AdmitDevice(ctx context.Context, u model.User, set *model.Sett
 	return DeviceVerdict{Allow: adm.Allowed, Cap: capacity, Count: adm.Count}
 }
 
-// reportDeviceRefusal writes the audit row and pings the operator and the user, at
-// most once per deviceRefusalQuiet for the same device.
 func (m *Manager) reportDeviceRefusal(
 	ctx context.Context, u model.User, set *model.Settings, d model.Device, capacity, count int,
 ) {
@@ -120,9 +94,6 @@ func (m *Manager) reportDeviceRefusal(
 		"hwid": d.HWID, "os": d.OS, "model": d.Model,
 		"devices": count, "device_limit": capacity,
 	})
-	// Reuse the device-limit notification categories rather than inventing a pair the
-	// operator would have to discover and switch on: to them this is the same event
-	// they already asked to hear about — someone has more devices than they may.
 	m.notifyAdminEvent(model.AdminEventDeviceLimited, fmt.Sprintf(
 		i18n.T(m.botLang(), "notify.adminDeviceRefused"),
 		escHTML(u.Name), escHTML(deviceLabel(d)), count, capacity))
@@ -131,13 +102,10 @@ func (m *Manager) reportDeviceRefusal(
 	m.EmitWebhook(model.WebhookUserDeviceLimit, userEventData(u))
 }
 
-// UserDevices lists the devices bound to a user (the user card's Devices list).
 func (m *Manager) UserDevices(userID int64) ([]model.Device, error) {
 	return m.store.ListDevices(userID)
 }
 
-// DeviceCount returns how many HWID-bound devices a user currently has. Best-effort
-// (0 on error): it feeds a display line, not an enforcement decision.
 func (m *Manager) DeviceCount(userID int64) int {
 	n, err := m.store.CountDevices(userID)
 	if err != nil {
@@ -147,9 +115,14 @@ func (m *Manager) DeviceCount(userID int64) int {
 	return n
 }
 
-// UnbindDevice releases one device slot. Reports whether anything was bound under
-// that id, so the caller can answer 404 rather than pretend.
+// UnbindDevice is operator-only on this fork. A subscription token authenticates a
+// user to fetch their profile, but it must not grant access to the device roster or
+// let the holder free device slots. Admin/API/Telegram actors keep the upstream
+// behavior unchanged.
 func (m *Manager) UnbindDevice(ctx context.Context, userID int64, hwid string) (bool, error) {
+	if actor.From(ctx).Kind == model.ActorUser {
+		return false, nil
+	}
 	ok, err := m.store.DeleteDevice(userID, hwid)
 	if err != nil || !ok {
 		return ok, err
@@ -158,8 +131,6 @@ func (m *Manager) UnbindDevice(ctx context.Context, userID int64, hwid string) (
 	return true, nil
 }
 
-// UnbindAllDevices releases every device of a user — the "they replaced their
-// phone / lost the lot" button.
 func (m *Manager) UnbindAllDevices(ctx context.Context, userID int64) (int64, error) {
 	n, err := m.store.DeleteDevices(userID)
 	if err != nil || n == 0 {
@@ -169,14 +140,6 @@ func (m *Manager) UnbindAllDevices(ctx context.Context, userID int64) (int64, er
 	return n, nil
 }
 
-// PurgeIdleDevices forgets devices that have not fetched for HWIDTTLDays, returning
-// their slots. Called from the retention sweep; a no-op only when the TTL is 0
-// (never forget).
-//
-// It runs even while device binding is switched OFF. The rows are inert then, but
-// they are not gone — and an operator who turns the feature off for half a year and
-// back on would otherwise find every user instantly at their cap, held there by
-// devices nobody owns any more.
 func (m *Manager) PurgeIdleDevices() {
 	set, err := m.store.GetSettings()
 	if err != nil || set.HWIDTTLDays <= 0 {
@@ -193,20 +156,10 @@ func (m *Manager) PurgeIdleDevices() {
 	}
 }
 
-// deviceKey identifies the ACCOUNT a refusal belongs to for the quiet period.
-//
-// Deliberately not (user, device): the hwid half comes straight off the request, so a
-// client sending a fresh random id every time produced a brand-new key every time —
-// the quiet period never matched, and each request wrote an audit row, pinged the
-// operator on Telegram, notified the user and fired a webhook. Keyed on the account,
-// a flood is one notification per window no matter how many ids it invents, and a real
-// subscriber's second refused device simply rides the same window.
 func deviceKey(userID int64) string {
 	return strconv.FormatInt(userID, 10)
 }
 
-// deviceLabel renders a device for a human: the model and OS when the client sent
-// them, the raw id when it sent nothing else.
 func deviceLabel(d model.Device) string {
 	switch {
 	case d.Model != "" && d.OS != "":
@@ -220,10 +173,6 @@ func deviceLabel(d model.Device) string {
 	}
 }
 
-// SetDeviceCountMode picks which counter enforces a user's device limit. Validated here
-// so the panel, /v1 and the MCP tool built from it all refuse the same values — an
-// unknown mode would otherwise fall through to "auto" silently and the operator would
-// believe they had changed something.
 func (m *Manager) SetDeviceCountMode(mode string) error {
 	switch mode {
 	case model.DeviceCountAuto, model.DeviceCountHWID, model.DeviceCountBoth:
@@ -235,9 +184,6 @@ func (m *Manager) SetDeviceCountMode(mode string) error {
 	if err := m.store.SetDeviceCountMode(mode); err != nil {
 		return err
 	}
-	// A user sync, not a reconcile: this changes WHO is in the user set, which Xray takes
-	// live over its API. TriggerReconcile would regenerate and RESTART Xray, dropping
-	// every session on the box because an operator picked an item from a dropdown.
 	m.TriggerUserSync()
 	return nil
 }
