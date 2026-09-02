@@ -20,9 +20,14 @@ func TestSubTitleNeverExposesInternalUserName(t *testing.T) {
 	}
 }
 
-func TestSubscriptionPageTemplateHasNoPersonalGreeting(t *testing.T) {
-	const marker = "{{.L.Greeting}}{{if .Name}}, {{.Name}}{{end}}"
-	if strings.Contains(pageHTML, marker) {
-		t.Fatal("public subscription page still contains the personalized greeting")
+func TestSubscriptionPageTemplateKeepsOperatorOnlyDataPrivate(t *testing.T) {
+	for _, marker := range []string{
+		"{{.L.Greeting}}{{if .Name}}, {{.Name}}{{end}}",
+		`id="devices-card"`,
+		`data-hwid="{{.HWID}}"`,
+	} {
+		if strings.Contains(pageHTML, marker) {
+			t.Fatalf("public subscription page still contains private marker %q", marker)
+		}
 	}
 }

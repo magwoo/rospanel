@@ -36,12 +36,20 @@ import (
 func nodeSettings(set *model.Settings, n *model.Node) *model.Settings {
 	ns := *set // shallow copy; we only overwrite value fields below
 	ns.ServerID = n.ID
+	ns.ServerPlacement = n.Placement
 	ns.Host = n.Host
 	ns.SNI = n.Host
 	ns.RealityPrivateKey = n.RealityPrivateKey
 	ns.RealityPublicKey = n.RealityPublicKey
 	ns.RealityShortID = n.RealityShortID
 	ns.RealityPath = n.RealityPath
+	// AmneziaWG: the node's own identity, never the master's; the port, name and
+	// DNS ride in the connections blob below (off ⇒ zero port ⇒ no config).
+	ns.AWGEnabled = derefBool(n.AWGEnabled)
+	ns.AWGPrivateKey = n.AWGPrivateKey
+	ns.AWGPublicKey = n.AWGPublicKey
+	ns.AWGParams = n.AWGParams
+	ns.AWGPort, ns.AWGName, ns.AWGDNS = 0, "", ""
 	// REALITY donor: the node's own if set, otherwise inherit the panel's (a node
 	// needs some donor for REALITY to work).
 	if n.RealityDest != "" {
@@ -113,6 +121,9 @@ func nodeSettings(set *model.Settings, n *model.Node) *model.Settings {
 		ns.VLESSName = c.VLESSName
 		ns.RealityName = c.RealityName
 		ns.HysteriaName = c.HysteriaName
+		ns.AWGPort = c.AWGPort
+		ns.AWGName = c.AWGName
+		ns.AWGDNS = c.AWGDNS
 	}
 	return &ns
 }
@@ -193,6 +204,16 @@ func (m *Manager) NodeDesiredState(n *model.Node) (*nodeapi.NodeState, error) {
 		GeoRefreshHours:   n.GeoRefreshHours, // the node's OWN geo cadence
 		XrayPinnedVersion: xray.PinnedVersion,
 		SpeedLimits:       m.SpeedLimits(),
+	}
+	if access, err := m.store.AccessMap(); err == nil {
+		meta.AWG = m.nodeAWGState(n, ns, users, access)
+	}
+	// What the source policy has refused, for this node's own firewall. Read here
+	// rather than pushed on each block so a node that was offline catches up on its
+	// next sync, and so the hash covers it (a lifted block reaches the node too).
+	if blocked, err := m.store.BlockedIPList(); err == nil && len(blocked) > 0 {
+		meta.BlockedIPs = blocked
+		meta.BlockTTLHours = int(policyTTL(set.ConnPolicy) / time.Hour)
 	}
 	if ns.OperaEnabled {
 		meta.OperaEnabled = true
@@ -400,6 +421,10 @@ type NodeView struct {
 	// MasterLabel is the master server's config-label name (local node only), so the
 	// UI can edit it. Empty for remote nodes (they use their own Name).
 	MasterLabel string `json:"master_label,omitempty"`
+	// Placement (country, weight, capacity) and the live online-user count the
+	// subscription orders servers by; see model.Placement and sub.Order.
+	model.Placement
+	OnlineUsers int `json:"online_users"`
 }
 
 // NodeViews returns the local server (node 0) followed by every remote node, each
@@ -416,6 +441,7 @@ func (m *Manager) NodeViews() ([]NodeView, error) {
 	today := time.Now().In(m.loc()).Format("2006-01-02")
 	traffic, _ := m.store.NodeTrafficTotals(0, today, today)
 	now := time.Now().Unix()
+	online := m.OnlineByServer()
 
 	views := make([]NodeView, 0, len(nodes)+1)
 	// Node 0: the panel's own server, identity from settings.
@@ -436,6 +462,8 @@ func (m *Manager) NodeViews() ([]NodeView, error) {
 		RealityEnabled:  set.RealityEnabled,
 		DecoyTemplate:   set.DecoyTemplate,
 		MasterLabel:     set.MasterLabel,
+		Placement:       set.MasterPlacement,
+		OnlineUsers:     online[model.LocalNodeID],
 		// The master's own routing/DNS/egress, so the relocated per-server editor edits
 		// the master through the same controls as a node.
 		Routing:        &set.Routing,
@@ -503,6 +531,8 @@ func (m *Manager) NodeViews() ([]NodeView, error) {
 			OperaEnabled:       n.OperaEnabled,
 			OperaCountry:       n.OperaCountry,
 			TrafficCoefficient: model.NodeCoefficientOr(n.TrafficCoefficient),
+			Placement:          n.Placement,
+			OnlineUsers:        online[n.ID],
 			// The node's own REALITY identity (dest "" ⇒ inherits the panel's donor).
 			RealityDest:      n.RealityDest,
 			RealityPublicKey: n.RealityPublicKey,
@@ -543,6 +573,7 @@ func (m *Manager) NodeLinkSettings() ([]*model.Settings, error) {
 		return nil, err
 	}
 	var out []*model.Settings
+	now := time.Now().Unix()
 	seen := map[string]int{}
 	// The master occupies its label first, so a node whose name collides with the
 	// master's config label gets disambiguated rather than silently overwriting the
@@ -552,6 +583,12 @@ func (m *Manager) NodeLinkSettings() ([]*model.Settings, error) {
 	}
 	for i := range nodes {
 		n := &nodes[i]
+		// Offline, if the operator asked for that (settings → subscriptions). Checked
+		// before the "never installed" case below, which is a different thing: a node
+		// that has never connected has no cert to pin, so it is skipped either way.
+		if set.SubHideOffline && !n.Online(now) {
+			continue
+		}
 		if !n.Enabled || n.LastSeen == 0 {
 			// Disabled, or never installed. Deliberately NOT "currently offline": a node
 			// bounces on every deploy and cert renewal, and yanking its links on a
@@ -844,9 +881,28 @@ func (m *Manager) ApplyNodeConnections(id int64, u ConnectionsUpdate) error {
 	}
 
 	// Protocols (the node's own explicit on/off).
+	awgPort, awgDNS, err := validateAWGUpdate(u.AWGPort, u.AWGDNS)
+	if err != nil {
+		return err
+	}
+	if u.Protocols["awg"] && awgPort == 0 {
+		if n.Connections != nil && n.Connections.AWGPort != 0 {
+			awgPort = n.Connections.AWGPort
+		} else {
+			awgPort = pickAWGPort()
+		}
+	}
 	if err := m.store.SetNodeProtocols(id,
 		u.Protocols["vless"], u.Protocols["hysteria2"], u.Protocols["reality"]); err != nil {
 		return err
+	}
+	if err := m.store.SetNodeAWGEnabled(id, u.Protocols["awg"]); err != nil {
+		return err
+	}
+	if u.Protocols["awg"] || u.RegenAWGKeys {
+		if err := m.ensureNodeAWGIdentity(n, u.RegenAWGKeys); err != nil {
+			return err
+		}
 	}
 	// REALITY donor + optional key regeneration.
 	if err := m.store.SetNodeRealityDest(id, realityDest); err != nil {
@@ -885,6 +941,9 @@ func (m *Manager) ApplyNodeConnections(id int64, u ConnectionsUpdate) error {
 		VLESSName:          connNames["vless"],
 		RealityName:        connNames["reality"],
 		HysteriaName:       connNames["hysteria2"],
+		AWGPort:            awgPort,
+		AWGName:            connNames["awg"],
+		AWGDNS:             awgDNS,
 	}
 	if err := m.store.SetNodeConnections(id, blob); err != nil {
 		return err
@@ -1639,7 +1698,7 @@ func (m *Manager) IngestNodeSync(n *model.Node, req nodeapi.SyncRequest) (*nodea
 	// the master. Not gated on ReportID: connection samples are idempotent (upsert by
 	// user+ip) and independent of the traffic batch.
 	for _, c := range req.Conns {
-		m.RecordAccess(c.Email, c.IP, "")
+		m.RecordAccessOn(n.ID, c.Email, c.IP, "")
 	}
 
 	// Destinations arrive pre-aggregated with a count, so they bypass RecordAccess
