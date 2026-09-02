@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -62,7 +61,6 @@ func TestSubscriptionBindsDevicesUpToTheCap(t *testing.T) {
 			t.Fatalf("%s: status %d, want 200", hwid, rec.Code)
 		}
 	}
-	// A repeat fetch from a bound device must keep working with the roster full.
 	if rec := fetchSub(h, u.SubToken, "dev-a"); rec.Code != http.StatusOK {
 		t.Errorf("bound device refused on refetch: status %d", rec.Code)
 	}
@@ -86,9 +84,6 @@ func TestSubscriptionBindsDevicesUpToTheCap(t *testing.T) {
 	}
 }
 
-// A client that sends no id gets no subscription: that is the default, because a cap
-// a user can dodge by switching to a quieter client is not a cap. Turning the switch
-// off serves them again, counted by address as before.
 func TestSubscriptionRefusesClientsWithoutHWID(t *testing.T) {
 	h, mgr, st := nodeAPITestServer(t)
 	u := hwidUser(t, mgr, st, 1, true)
@@ -107,8 +102,6 @@ func TestSubscriptionRefusesClientsWithoutHWID(t *testing.T) {
 	}
 }
 
-// The cap only applies once the operator turns the feature on; until then nothing
-// is bound at all, so upgrading the panel changes nothing for anyone.
 func TestSubscriptionIgnoresDevicesWhenDisabled(t *testing.T) {
 	h, mgr, st := nodeAPITestServer(t)
 	u := hwidUser(t, mgr, st, 1, false)
@@ -128,9 +121,9 @@ func TestSubscriptionIgnoresDevicesWhenDisabled(t *testing.T) {
 	}
 }
 
-// The page lists the devices and the button releases one — the self-service that
-// keeps a full roster from becoming a support ticket.
-func TestSubscriptionPageListsAndUnbindsDevices(t *testing.T) {
+// Device binding is operator-managed. The public subscription page exposes neither
+// the roster nor its count, and the former self-service unbind path cannot mutate it.
+func TestSubscriptionPageHidesDevicesAndCannotUnbind(t *testing.T) {
 	h, mgr, st := nodeAPITestServer(t)
 	u := hwidUser(t, mgr, st, 2, false)
 	if rec := fetchSub(h, u.SubToken, "dev-a"); rec.Code != http.StatusOK {
@@ -145,28 +138,21 @@ func TestSubscriptionPageListsAndUnbindsDevices(t *testing.T) {
 	if page.Code != http.StatusOK {
 		t.Fatalf("page: status %d", page.Code)
 	}
-	if !strings.Contains(page.Body.String(), "Pixel 9") {
-		t.Error("the page doesn't list the bound device")
-	}
-	// The unbind target lives in a <script>, where html/template escapes the slashes
-	// — match on the row and the handler instead of the raw path.
-	if !strings.Contains(page.Body.String(), `data-hwid="dev-a"`) {
-		t.Error("the device row carries no id to unbind")
-	}
-	if !strings.Contains(page.Body.String(), "unbindDevice(") {
-		t.Error("the page has no unbind button")
+	for _, leaked := range []string{"Pixel 9", `data-hwid="dev-a"`, `id="devices-card"`} {
+		if strings.Contains(page.Body.String(), leaked) {
+			t.Errorf("subscription page exposes device data %q", leaked)
+		}
 	}
 
-	body, _ := json.Marshal(map[string]string{"hwid": "dev-a"})
-	unbind := httptest.NewRequest(http.MethodPost, "/sub/"+u.SubToken+"/devices/unbind", strings.NewReader(string(body)))
+	unbind := httptest.NewRequest(http.MethodPost, "/sub/"+u.SubToken+"/devices/unbind", strings.NewReader(`{"hwid":"dev-a"}`))
 	unbind.Header.Set("Content-Type", "application/json")
 	unbind.RemoteAddr = testClientIP + ":40000"
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, unbind)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("unbind: status %d, body %s", rec.Code, rec.Body.String())
+	if rec.Code == http.StatusOK {
+		t.Fatalf("retired unbind path still succeeds")
 	}
-	if n, _ := st.CountDevices(u.ID); n != 0 {
-		t.Errorf("%d devices left after unbinding the only one", n)
+	if n, _ := st.CountDevices(u.ID); n != 1 {
+		t.Errorf("device roster changed through retired public path: %d devices", n)
 	}
 }
