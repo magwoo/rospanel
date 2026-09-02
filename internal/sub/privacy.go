@@ -17,13 +17,13 @@ func init() {
 	pageHTML = strings.Replace(pageHTML, greeting, "", 1)
 
 	const deviceStart = "      {{if .Devices.Show}}\n"
-	const configsStart = "      {{if .ShowConfigs}}\n"
+	const awgStart = "      {{if .AWG}}\n"
 	start := strings.Index(pageHTML, deviceStart)
 	if start < 0 {
 		panic("subscription privacy: devices start marker not found")
 	}
 	rest := pageHTML[start:]
-	end := strings.Index(rest, configsStart)
+	end := strings.Index(rest, awgStart)
 	if end < 0 {
 		panic("subscription privacy: devices end marker not found")
 	}
