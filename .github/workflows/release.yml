@@ -1,11 +1,11 @@
 name: release
 
-# A version tag is the release boundary for this fork. CI validates changes before
-# they reach main; pushing vX.Y.Z builds that exact revision and publishes it.
+# VERSION is the release boundary for this fork. CI validates changes before they
+# reach main; changing VERSION publishes that exact main revision.
 on:
   push:
-    tags:
-      - "v*.*.*"
+    branches: [main]
+    paths: [VERSION]
 
 permissions:
   contents: write
@@ -13,19 +13,23 @@ permissions:
 jobs:
   build-release:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v7
 
-      - name: Validate version tag
+      - name: Read version
         id: version
         shell: bash
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="$(tr -d '[:space:]' < VERSION)"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
-            echo "invalid release tag: ${GITHUB_REF_NAME}" >&2
+            echo "invalid VERSION: ${version}" >&2
             exit 1
           }
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-node@v7
         with:
@@ -65,10 +69,11 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "$TAG" \
             rospanel-linux-amd64 rospanel-linux-arm64 SHA256SUMS \
-            --verify-tag --generate-notes --title "$GITHUB_REF_NAME"
+            --target "$GITHUB_SHA" --generate-notes --title "$TAG"
 
   build-image:
     needs: build-release
@@ -78,14 +83,6 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v7
-
-      - name: Validate version tag
-        id: version
-        shell: bash
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
-          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
@@ -103,8 +100,8 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=semver,pattern={{version}},value=${{ github.ref_name }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ github.ref_name }}
+            type=semver,pattern={{version}},value=${{ needs.build-release.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.build-release.outputs.tag }}
             type=raw,value=latest
 
       - name: Build and push image
@@ -116,7 +113,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ steps.version.outputs.version }}
+            VERSION=${{ needs.build-release.outputs.version }}
           provenance: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
