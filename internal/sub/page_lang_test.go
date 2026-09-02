@@ -53,10 +53,13 @@ func TestPageRussianStillRussian(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 	s := string(html)
-	for _, want := range []string{"Привет", "Скопировать ссылку подписки", "Отдельные конфиги"} {
+	for _, want := range []string{"Скопировать ссылку подписки", "Отдельные конфиги"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("Russian page is missing %q", want)
 		}
+	}
+	if strings.Contains(s, "Привет") || strings.Contains(s, u.Name) {
+		t.Error("public subscription page exposes the removed personalized greeting")
 	}
 }
 
