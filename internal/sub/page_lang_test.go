@@ -45,7 +45,8 @@ func TestPageEnglishHasNoRussian(t *testing.T) {
 }
 
 // TestPageRussianStillRussian is the other half: the English work must not have
-// quietly turned the Russian page English.
+// quietly turned the Russian page English. The personalized greeting is intentionally
+// absent in this fork because User.Name is operator-only.
 func TestPageRussianStillRussian(t *testing.T) {
 	u := model.User{Name: "Алиса", SubToken: "tok"}
 	html, err := Page(u, langTestServers(), Billing{}, Devices{}, true, i18n.RU)
@@ -53,10 +54,13 @@ func TestPageRussianStillRussian(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 	s := string(html)
-	for _, want := range []string{"Привет", "Скопировать ссылку подписки", "Отдельные конфиги"} {
+	for _, want := range []string{"Скопировать ссылку подписки", "Отдельные конфиги"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("Russian page is missing %q", want)
 		}
+	}
+	if strings.Contains(s, "Привет") || strings.Contains(s, u.Name) {
+		t.Error("public subscription page exposes the removed personalized greeting")
 	}
 }
 
